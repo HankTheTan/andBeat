@@ -10,14 +10,14 @@ import SwiftData
 
 @main
 struct andBeatApp: App {
-    var sharedModelContainer: ModelContainer = {
+    let sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            CycleProfile.self,
+            DailyMetrics.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try ModelContainer(for: schema, configurations: [config])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
@@ -26,6 +26,11 @@ struct andBeatApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .onAppear {
+                    // 首次启动时写入 Mock 数据
+                    let ctx = sharedModelContainer.mainContext
+                    MockDataSeeder.seedIfNeeded(in: ctx)
+                }
         }
         .modelContainer(sharedModelContainer)
     }
