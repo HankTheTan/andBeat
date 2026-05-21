@@ -1,5 +1,13 @@
 import Foundation
 
+// MARK: - SupabaseUser (accessible across all files)
+struct SupabaseUser: Identifiable, Decodable {
+    let id:       String
+    let userName: String
+    let email:    String?
+}
+
+// MARK: - Service
 @Observable
 final class SupabaseService {
     static let shared = SupabaseService()
@@ -18,9 +26,16 @@ final class SupabaseService {
     func signIn(email: String, password: String) async throws { }
     func signOut() async throws { }
 
+    // MARK: - Users
+    func fetchUsers() async throws -> [SupabaseUser] {
+        let data = try await get("users?select=id,user_name,email&order=created_at.asc")
+        return try Self.decoder.decode([SupabaseUser].self, from: data)
+    }
+
     // MARK: - CycleProfile
-    func fetchCycleProfile() async throws -> CycleProfile? {
-        let data = try await get("cycle_profiles?user_id=eq.\(userID)&select=*&limit=1")
+    func fetchCycleProfile(for userID: String? = nil) async throws -> CycleProfile? {
+        let id   = userID ?? self.userID
+        let data = try await get("cycle_profiles?user_id=eq.\(id)&select=*&limit=1")
         let rows = try Self.decoder.decode([CycleProfileRow].self, from: data)
         return rows.first.map(CycleProfile.from)
     }
@@ -37,9 +52,10 @@ final class SupabaseService {
     }
 
     // MARK: - DailyMetrics
-    func fetchDailyMetrics(limit: Int = 30) async throws -> [DailyMetrics] {
+    func fetchDailyMetrics(for userID: String? = nil, limit: Int = 30) async throws -> [DailyMetrics] {
+        let id   = userID ?? self.userID
         let data = try await get(
-            "daily_metrics?user_id=eq.\(userID)&order=record_date.desc&limit=\(limit)&select=*"
+            "daily_metrics?user_id=eq.\(id)&order=record_date.desc&limit=\(limit)&select=*"
         )
         let rows = try Self.decoder.decode([DailyMetricsRow].self, from: data)
         return rows.map(DailyMetrics.from)
@@ -58,11 +74,9 @@ private extension SupabaseService {
     func get(_ path: String) async throws -> Data {
         try await send(makeRequest(path, method: "GET"))
     }
-
     func post(_ path: String, body: Data) async throws -> Data {
         try await send(makeRequest(path, method: "POST", body: body))
     }
-
     func patch(_ path: String, body: Data) async throws -> Data {
         try await send(makeRequest(path, method: "PATCH", body: body))
     }
@@ -94,7 +108,6 @@ private extension SupabaseService {
         d.keyDecodingStrategy = .convertFromSnakeCase
         return d
     }()
-
     static let encoder: JSONEncoder = {
         let e = JSONEncoder()
         e.keyEncodingStrategy = .convertToSnakeCase
@@ -105,7 +118,7 @@ private extension SupabaseService {
 // MARK: - CycleProfile DTO
 private struct CycleProfileRow: Codable {
     var userId:          String
-    var lastPeriodStart: String  // "yyyy-MM-dd"
+    var lastPeriodStart: String
     var cycleLength:     Int
     var periodLength:    Int
 
@@ -135,8 +148,8 @@ extension CycleProfile {
 // MARK: - DailyMetrics DTO
 private struct DailyMetricsRow: Codable {
     var userId:          String
-    var recordDate:      String  // "yyyy-MM-dd"
-    var recordedAt:      String  // ISO8601 full timestamp
+    var recordDate:      String
+    var recordedAt:      String
     var heartRate:       Double?
     var bodyTemperature: Double?
     var hrv:             Double?

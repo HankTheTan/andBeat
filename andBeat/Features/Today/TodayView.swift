@@ -6,11 +6,11 @@ struct TodayView: View {
     @Query private var profiles: [CycleProfile]
     @Query(sort: \DailyMetrics.date, order: .reverse) private var metricsHistory: [DailyMetrics]
     @State private var viewModel = TodayViewModel()
+    @State private var showUserPicker = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
-                // Very subtle vertical gradient lift (barely perceptible)
                 Color.clear.frame(height: 0)
                     .background(
                         LinearGradient(
@@ -19,16 +19,16 @@ struct TodayView: View {
                         )
                     )
 
-                GreetingRow(viewModel: viewModel)
+                GreetingRow(viewModel: viewModel, onCloudTap: { showUserPicker = true })
                     .padding(.top, 18)
                     .padding(.horizontal, 24)
                     .padding(.bottom, 6)
 
-                CyclePhaseCard(profile: viewModel.profile)
+                CyclePhaseCard(profile: viewModel.displayProfile)
                     .padding(.top, 20)
                     .padding(.horizontal, 20)
 
-                MetricsGrid(metrics: viewModel.todayMetrics)
+                MetricsGrid(metrics: viewModel.displayMetrics)
                     .padding(.top, 14)
                     .padding(.horizontal, 20)
 
@@ -51,39 +51,71 @@ struct TodayView: View {
         .onChange(of: profiles)       { viewModel.load(profiles: profiles, metrics: metricsHistory) }
         .onChange(of: metricsHistory) { viewModel.load(profiles: profiles, metrics: metricsHistory) }
         .onAppear                     { viewModel.load(profiles: profiles, metrics: metricsHistory) }
+        .sheet(isPresented: $showUserPicker) {
+            CloudUserPickerSheet(viewModel: viewModel)
+                .presentationDetents([.medium])
+                .presentationBackground(Pulse.bg)
+                .presentationCornerRadius(24)
+        }
     }
 }
 
 // MARK: - ① Greeting Row
 private struct GreetingRow: View {
-    let viewModel: TodayViewModel
+    let viewModel:   TodayViewModel
+    let onCloudTap:  () -> Void
 
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
-                // Monospaced "下午好 · 5月21日"
                 Text("\(viewModel.greeting) · \(viewModel.dateString)")
                     .font(.system(size: 10, weight: .regular, design: .monospaced))
                     .tracking(2.5)
                     .foregroundStyle(Pulse.inkSoft)
 
-                // Serif user name
-                Text(viewModel.profile?.userName ?? "PULSE")
+                Text(viewModel.displayName)
                     .font(.custom("Georgia", size: 30))
                     .fontWeight(.regular)
                     .foregroundStyle(Pulse.ink)
                     .tracking(-0.5)
+                    .animation(.easeInOut(duration: 0.25), value: viewModel.displayName)
             }
             Spacer()
-            // NOT CONNECTED pill
-            HStack(spacing: 8) {
+            CloudStatusPill(viewModel: viewModel, onTap: onCloudTap)
+        }
+    }
+}
+
+// MARK: - Cloud Status Pill
+private struct CloudStatusPill: View {
+    let viewModel: TodayViewModel
+    let onTap:     () -> Void
+
+    private var dotColor: Color {
+        if viewModel.isLoadingCloud    { return Pulse.gold }
+        if viewModel.isCloudConnected  { return Color(hex: "6AAF72") }
+        return Pulse.inkFaint
+    }
+
+    private var label: String {
+        if viewModel.isLoadingCloud   { return "LOADING..." }
+        if viewModel.isCloudConnected { return "CLOUD · \(viewModel.cloudUser?.userName ?? "")" }
+        return "CLOUD · SELECT USER"
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 6) {
                 Circle()
-                    .fill(Pulse.inkFaint)
+                    .fill(dotColor)
                     .frame(width: 5, height: 5)
-                Text("NOT CONNECTED")
+                    .opacity(viewModel.isLoadingCloud ? 0.6 : 1)
+                    .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true),
+                               value: viewModel.isLoadingCloud)
+                Text(label)
                     .font(.system(size: 9, weight: .regular, design: .monospaced))
                     .tracking(1.5)
-                    .foregroundStyle(Pulse.inkSoft)
+                    .foregroundStyle(viewModel.isCloudConnected ? Pulse.inkSoft : Pulse.inkFaint)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
@@ -92,13 +124,11 @@ private struct GreetingRow: View {
                     .fill(Color.white.opacity(0.45))
                     .overlay(Capsule().strokeBorder(Pulse.cardBorder, lineWidth: 1))
             )
-            .overlay(
-                Capsule()
-                    .fill(.ultraThinMaterial)
-                    .opacity(0.4)
-            )
+            .overlay(Capsule().fill(.ultraThinMaterial).opacity(0.4))
             .clipShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.25), value: viewModel.isCloudConnected)
     }
 }
 
@@ -531,6 +561,203 @@ struct PulseCard<Content: View>: View {
                     .strokeBorder(Pulse.cardBorder, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: radius))
+    }
+}
+
+// MARK: - Cloud User Picker Sheet
+private struct CloudUserPickerSheet: View {
+    let viewModel: TodayViewModel
+
+    @State private var users:     [SupabaseUser]  = []
+    @State private var profiles:  [String: CycleProfile] = [:]   // userID → profile
+    @State private var isLoading  = true
+    @State private var fetchError: String?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("CLOUD USERS · SUPABASE")
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .tracking(2.5)
+                        .foregroundStyle(Pulse.inkSoft)
+                    Text("选择用户查看数据")
+                        .font(.custom("Georgia", size: 20))
+                        .foregroundStyle(Pulse.ink)
+                }
+                Spacer()
+                // DB status dot
+                HStack(spacing: 6) {
+                    Circle().fill(isLoading ? Pulse.gold : Color(hex: "6AAF72"))
+                        .frame(width: 6, height: 6)
+                    Text(isLoading ? "CONNECTING" : "DB LIVE")
+                        .font(.system(size: 8, weight: .regular, design: .monospaced))
+                        .tracking(1.5)
+                        .foregroundStyle(Pulse.inkFaint)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 28)
+            .padding(.bottom, 20)
+
+            Rectangle().fill(Pulse.inkHair).frame(height: 1).padding(.horizontal, 24)
+
+            // User list
+            if isLoading {
+                Spacer()
+                ProgressView()
+                    .tint(Pulse.gold)
+                Spacer()
+            } else if let err = fetchError {
+                Spacer()
+                Text(err)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Pulse.inkFaint)
+                    .padding()
+                Spacer()
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(users) { user in
+                            UserRow(
+                                user:          user,
+                                cycleProfile:  profiles[user.id],
+                                isSelected:    viewModel.cloudUser?.id == user.id,
+                                isLoading:     viewModel.isLoadingCloud && viewModel.cloudUser?.id == user.id
+                            ) {
+                                Task {
+                                    await viewModel.loadFromSupabase(user: user)
+                                    dismiss()
+                                }
+                            }
+                            Rectangle().fill(Pulse.inkHair).frame(height: 1).padding(.horizontal, 24)
+                        }
+                    }
+                }
+                .padding(.top, 4)
+            }
+
+            // Disconnect button (only when connected)
+            if viewModel.isCloudConnected && !isLoading {
+                Button {
+                    viewModel.disconnectCloud()
+                    dismiss()
+                } label: {
+                    Text("断开云端连接")
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .tracking(1.5)
+                        .foregroundStyle(Pulse.inkFaint)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 16)
+            }
+        }
+        .task {
+            await loadUsers()
+        }
+    }
+
+    private func loadUsers() async {
+        do {
+            let fetched = try await SupabaseService.shared.fetchUsers()
+            // Fetch each user's cycle profile in parallel
+            var profileMap: [String: CycleProfile] = [:]
+            await withTaskGroup(of: (String, CycleProfile?).self) { group in
+                for u in fetched {
+                    group.addTask {
+                        let p = try? await SupabaseService.shared.fetchCycleProfile(for: u.id)
+                        return (u.id, p)
+                    }
+                }
+                for await (uid, profile) in group {
+                    if let p = profile { profileMap[uid] = p }
+                }
+            }
+            await MainActor.run {
+                users     = fetched
+                profiles  = profileMap
+                isLoading = false
+            }
+        } catch {
+            await MainActor.run {
+                fetchError = error.localizedDescription
+                isLoading  = false
+            }
+        }
+    }
+}
+
+private struct UserRow: View {
+    let user:         SupabaseUser
+    let cycleProfile: CycleProfile?
+    let isSelected:   Bool
+    let isLoading:    Bool
+    let onTap:        () -> Void
+
+    private var phaseLabel: String {
+        guard let p = cycleProfile else { return "—" }
+        return "\(p.currentPhase.rawValue) · D\(p.currentCycleDay)/\(p.cycleLength)"
+    }
+
+    private var initials: String {
+        String(user.userName.prefix(1))
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 16) {
+                // Avatar
+                ZStack {
+                    Circle()
+                        .fill(isSelected ? Pulse.gold.opacity(0.15) : Pulse.inkHair)
+                        .frame(width: 42, height: 42)
+                    Text(initials)
+                        .font(.custom("Georgia", size: 18))
+                        .foregroundStyle(isSelected ? Pulse.gold : Pulse.ink)
+                }
+
+                // Info
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(user.userName)
+                        .font(.custom("Georgia", size: 18))
+                        .foregroundStyle(Pulse.ink)
+                    HStack(spacing: 8) {
+                        Text(phaseLabel)
+                            .font(.system(size: 9, weight: .regular, design: .monospaced))
+                            .tracking(1.5)
+                            .foregroundStyle(isSelected ? Pulse.gold : Pulse.inkFaint)
+                        if let email = user.email {
+                            Text("·")
+                                .foregroundStyle(Pulse.inkHair)
+                            Text(email)
+                                .font(.system(size: 9, weight: .regular, design: .monospaced))
+                                .tracking(0.5)
+                                .foregroundStyle(Pulse.inkFaint)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                // State indicator
+                if isLoading {
+                    ProgressView().tint(Pulse.gold).scaleEffect(0.8)
+                } else if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Pulse.gold)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
