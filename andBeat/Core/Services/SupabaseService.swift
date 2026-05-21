@@ -135,7 +135,7 @@ private struct CycleProfileRow: Codable {
 }
 
 extension CycleProfile {
-    static func from(_ row: CycleProfileRow) -> CycleProfile {
+    fileprivate static func from(_ row: CycleProfileRow) -> CycleProfile {
         let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
         return CycleProfile(
             lastPeriodStart: df.date(from: row.lastPeriodStart) ?? Date(),
@@ -170,7 +170,7 @@ private struct DailyMetricsRow: Codable {
 }
 
 extension DailyMetrics {
-    static func from(_ row: DailyMetricsRow) -> DailyMetrics {
+    fileprivate static func from(_ row: DailyMetricsRow) -> DailyMetrics {
         let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
         return DailyMetrics(
             date:            df.date(from: row.recordDate) ?? Date(),
